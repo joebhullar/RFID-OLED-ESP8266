@@ -1,0 +1,308 @@
+/*
+ * Initial Author: ryand1011 (https://github.com/ryand1011)
+ *
+ * Reads data written by a program such as "rfid_write_personal_data.ino"
+ *
+ * See: https://github.com/miguelbalboa/rfid/tree/master/examples/rfid_write_personal_data
+ *
+ * Uses MIFARE RFID card using RFID-RC522 reader
+ * Uses MFRC522 - Library
+ * -----------------------------------------------------------------------------------------
+ *             MFRC522      Arduino       Arduino   Arduino    Arduino          Arduino
+ *             Reader/PCD   Uno/101       Mega      Nano v3    Leonardo/Micro   Pro Micro
+ * Signal      Pin          Pin           Pin       Pin        Pin              Pin
+ * -----------------------------------------------------------------------------------------
+ * RST/Reset   RST          9             5         D9         RESET/ICSP-5     RST
+ * SPI SS      SDA(SS)      10            53        D10        10               10
+ * SPI MOSI    MOSI         11 / ICSP-4   51        D11        ICSP-4           16
+ * SPI MISO    MISO         12 / ICSP-1   50        D12        ICSP-1           14
+ * SPI SCK     SCK          13 / ICSP-3   52        D13        ICSP-3           15
+*/
+#include <ESP8266WiFi.h>
+#include <Ticker.h>
+#include <JsonListener.h>
+#include "SSD1306Wire.h"
+#include "OLEDDisplayUi.h"
+#include "Wire.h"
+#include "WorldClockClient.h"
+#include "icons.h"
+#include "fonts.h"
+
+const char* WIFI_SSID = "sbp";
+const char* WIFI_PWD = "sbpsolinc91";
+
+// Setup
+const int UPDATE_INTERVAL_SECS = 10 * 60; // Update every 10 minutes
+
+// Display Settings
+const int I2C_DISPLAY_ADDRESS = 0x3c;
+const int SDA_PIN = D3;
+const int SDC_PIN = D4;
+
+// TimeClient settings
+
+
+// Initialize the oled display for address 0x3c
+// sda-pin=14 and sdc-pin=12
+
+SSD1306Wire  display(I2C_DISPLAY_ADDRESS, SDA_PIN, SDC_PIN);
+OLEDDisplayUi ui     ( &display );
+
+/***************************
+ * End Settings
+ **************************/
+String timeZoneIds [] = {"America/New_York", "Europe/London", "Europe/Paris", "Australia/Sydney"};
+WorldClockClient worldClockClient("de", "CH", "E, dd. MMMMM yyyy", 4, timeZoneIds);
+
+
+// flag changed in the ticker function every 10 minutes
+bool readyForUpdate = false;
+
+String lastUpdate = "--";
+
+Ticker ticker;
+
+
+void updateData(OLEDDisplay *display) {
+  drawProgress(display, 50, "Updating Time...");
+  worldClockClient.updateTime();
+  drawProgress(display, 100, "Done...");
+  readyForUpdate = false;
+  delay(1000);
+}
+
+void drawProgress(OLEDDisplay *display, int percentage, String label) {
+  display->clear();
+  display->setTextAlignment(TEXT_ALIGN_CENTER);
+  display->setFont(ArialMT_Plain_10);
+  display->drawString(64, 10, label);
+  display->drawProgressBar(10, 28, 108, 12, percentage);
+  display->display();
+}
+
+void drawClock(OLEDDisplay *display, int x, int y, int timeZoneIndex, String city, const char* icon) {
+  display->setTextAlignment(TEXT_ALIGN_LEFT);
+  display->setFont(ArialMT_Plain_10);
+  display->drawString(x + 60, y + 5, city);
+  display->setFont(Crushed_Plain_36);
+  display->drawXbm(x, y, 60, 60, icon);
+  display->drawString(x + 60, y + 15, worldClockClient.getHours(timeZoneIndex) + ":" + worldClockClient.getMinutes(timeZoneIndex));
+
+}
+
+void drawFrame1(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  drawClock(display, x, y, 0, "New York",  new_york_bits);
+}
+
+void drawFrame2(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  drawClock(display, x, y, 1, "London",  london_bits);
+}
+
+void drawFrame3(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  drawClock(display, x, y, 2, "Paris",  paris_bits);
+}
+
+void drawFrame4(OLEDDisplay *display, OLEDDisplayUiState* state, int16_t x, int16_t y) {
+  drawClock(display, x, y, 3, "Sydney",  sydney_bits);
+}
+
+
+void setReadyForWeatherUpdate() {
+  Serial.println("Setting readyForUpdate to true");
+  readyForUpdate = true;
+}
+
+// this array keeps function pointers to all frames
+// frames are the single views that slide from right to left
+FrameCallback frames[] = { drawFrame1, drawFrame2, drawFrame3, drawFrame4};
+int numberOfFrames = 4;
+
+
+#include <SPI.h>
+#include <MFRC522.h>
+
+#define RST_PIN         D9           // Configurable, see typical pin layout above
+#define SS_PIN          D8          // Configurable, see typical pin layout above
+
+MFRC522 mfrc522(SS_PIN, RST_PIN);   // Create MFRC522 instance
+
+//*****************************************************************************************//
+void setup() {
+  Serial.begin(9600);                                           // Initialize serial communications with the PC  
+  SPI.begin();                                                  // Init SPI bus
+  mfrc522.PCD_Init();                                              // Init MFRC522 card
+  Serial.println(F("Read personal data on a MIFARE PICC:"));    //shows in serial that it is ready to read
+   Serial.println();
+  Serial.println();
+
+  // initialize dispaly
+  display.init();
+  display.clear();
+  display.display();
+
+  //display.flipScreenVertically();
+  display.setFont(ArialMT_Plain_10);
+  display.setTextAlignment(TEXT_ALIGN_CENTER);
+  display.setContrast(255);
+
+  WiFi.begin(WIFI_SSID, WIFI_PWD);
+
+  int counter = 0;
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+    display.clear();
+    display.drawString(64, 10, "Connecting to WiFi");
+    display.drawXbm(46, 30, 8, 8, counter % 3 == 0 ? activeSymbol : inactiveSymbol);
+    display.drawXbm(60, 30, 8, 8, counter % 3 == 1 ? activeSymbol : inactiveSymbol);
+    display.drawXbm(74, 30, 8, 8, counter % 3 == 2 ? activeSymbol : inactiveSymbol);
+    display.display();
+
+    counter++;
+  }
+
+  ui.setTargetFPS(30);
+
+  // You can change this to
+  // TOP, LEFT, BOTTOM, RIGHT
+  ui.setIndicatorPosition(BOTTOM);
+
+  // Defines where the first frame is located in the bar.
+  ui.setIndicatorDirection(LEFT_RIGHT);
+
+  // You can change the transition that is used
+  // SLIDE_LEFT, SLIDE_RIGHT, SLIDE_TOP, SLIDE_DOWN
+  ui.setFrameAnimation(SLIDE_LEFT);
+
+  // Add frames
+  ui.setFrames(frames, numberOfFrames);
+
+  // Inital UI takes care of initalising the display too.
+  ui.init();
+
+  Serial.println("");
+
+  updateData(&display);
+
+  ticker.attach(UPDATE_INTERVAL_SECS, setReadyForWeatherUpdate);
+
+
+}
+
+//*****************************************************************************************//
+void loop() {
+
+  // Prepare key - all keys are set to FFFFFFFFFFFFh at chip delivery from the factory.
+  MFRC522::MIFARE_Key key;
+  for (byte i = 0; i < 6; i++) key.keyByte[i] = 0xFF;
+
+  //some variables we need
+  byte block;
+  byte len;
+  MFRC522::StatusCode status;
+
+  //-------------------------------------------
+
+  // Look for new cards
+  if ( ! mfrc522.PICC_IsNewCardPresent()) {
+    return;
+  }
+
+  // Select one of the cards
+  if ( ! mfrc522.PICC_ReadCardSerial()) {
+    return;
+  }
+
+  Serial.println(F("**Card Detected:**"));
+
+  //-------------------------------------------
+
+  mfrc522.PICC_DumpDetailsToSerial(&(mfrc522.uid)); //dump some details about the card
+
+  //mfrc522.PICC_DumpToSerial(&(mfrc522.uid));      //uncomment this to see all blocks in hex
+
+  //-------------------------------------------
+
+  Serial.print(F("Name: "));
+
+  byte buffer1[18];
+
+  block = 4;
+  len = 18;
+
+  //------------------------------------------- GET FIRST NAME
+  status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, 4, &key, &(mfrc522.uid)); //line 834 of MFRC522.cpp file
+  if (status != MFRC522::STATUS_OK) {
+    Serial.print(F("Authentication failed: "));
+    Serial.println(mfrc522.GetStatusCodeName(status));
+    return;
+  }
+
+  status = mfrc522.MIFARE_Read(block, buffer1, &len);
+  if (status != MFRC522::STATUS_OK) {
+    Serial.print(F("Reading failed: "));
+    Serial.println(mfrc522.GetStatusCodeName(status));
+    return;
+  }
+
+  //PRINT FIRST NAME
+  for (uint8_t i = 0; i < 16; i++)
+  {
+    if (buffer1[i] != 32)
+    {
+      Serial.write(buffer1[i]);
+    }
+  }
+  Serial.print(" ");
+
+  //---------------------------------------- GET LAST NAME
+
+  byte buffer2[18];
+  block = 1;
+
+  status = mfrc522.PCD_Authenticate(MFRC522::PICC_CMD_MF_AUTH_KEY_A, 1, &key, &(mfrc522.uid)); //line 834
+  if (status != MFRC522::STATUS_OK) {
+    Serial.print(F("Authentication failed: "));
+    Serial.println(mfrc522.GetStatusCodeName(status));
+    return;
+  }
+
+  status = mfrc522.MIFARE_Read(block, buffer2, &len);
+  if (status != MFRC522::STATUS_OK) {
+    Serial.print(F("Reading failed: "));
+    Serial.println(mfrc522.GetStatusCodeName(status));
+    return;
+  }
+
+  //PRINT LAST NAME
+  for (uint8_t i = 0; i < 16; i++) {
+    Serial.write(buffer2[i] );
+  }
+
+
+  //----------------------------------------
+
+  Serial.println(F("\n**End Reading**\n"));
+
+  delay(1000); //change value if you want to read cards faster
+
+  mfrc522.PICC_HaltA();
+  mfrc522.PCD_StopCrypto1();
+
+   if (readyForUpdate && ui.getUiState()->frameState == FIXED) {
+    updateData(&display);
+  }
+
+  int remainingTimeBudget = ui.update();
+
+  if (remainingTimeBudget > 0) {
+    // You can do some work here
+    // Don't do stuff if you are below your
+    // time budget.
+    delay(remainingTimeBudget);
+  }
+
+
+  
+}
+//*****************************************************************************************//
